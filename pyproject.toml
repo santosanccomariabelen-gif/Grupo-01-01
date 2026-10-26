@@ -1,0 +1,26 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "Agente conversacional bancario en capas domain / application / infrastructure"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "azure-identity>=1.26.0",
+    "fastapi>=0.115",
+    "openai>=3.35.1",
+    "pydantic-settings>=2.16.0",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"

@@ -1,0 +1,16 @@
+# Overlay del día 1: Foundry simulado, sin cuenta de Azure.
+#   docker compose -f devops/compose.yaml -f devops/compose.mock.yaml up --build agent
+services:
+  mock-foundry:
+    build: { context: .., dockerfile: devops/Dockerfile, target: test }
+    image: agent:test
+    command: ["python", "dev/mock_foundry.py"]
+    environment:
+      MOCK_HOST: 0.0.0.0
+
+  agent:
+    environment:
+      FOUNDRY_ENDPOINT: http://mock-foundry:8100
+      FOUNDRY_AUTH_PROVIDER: api_key
+      FOUNDRY_API_KEY: fake-token
+    depends_on: [mock-foundry]

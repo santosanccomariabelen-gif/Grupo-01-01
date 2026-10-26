@@ -1,0 +1,81 @@
+# CI/CD: tests en contenedor -> build y push a ACR -> deploy en Azure Container Apps.
+# Sin secretos en GitHub: login a Azure por OIDC; si Foundry usa api_key, la key vive en Key Vault.
+# Configuración (Settings -> Secrets and variables -> Actions -> Variables): ver README, sección Deploy.
+# Si ACR_NAME no está definida, solo corre el job de tests.
+name: deploy-agent
+
+on:
+  push:
+    branches: [main, solution]
+    tags: ["t*-v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests en contenedor (stage test)
+        run: |
+          docker build -f devops/Dockerfile --target test -t agent:test .
+          docker run --rm agent:test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && vars.ACR_NAME != ''
+    runs-on: ubuntu-latest
+    environment: sandbox
+    permissions:
+      contents: read
+      id-token: write # token OIDC para azure/login
+    env:
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+      CONTAINER_APP: ${{ vars.CONTAINER_APP }}
+      # ACR compartido, un repositorio por equipo (p. ej. team-01/agent); por defecto "agent"
+      IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/${{ vars.IMAGE_REPOSITORY || 'agent' }}:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      FOUNDRY_ENDPOINT: ${{ vars.FOUNDRY_ENDPOINT }}
+      FOUNDRY_DEPLOYMENT: ${{ vars.FOUNDRY_DEPLOYMENT }}
+      FOUNDRY_AUTH_PROVIDER: ${{ vars.FOUNDRY_AUTH_PROVIDER }}
+      APP_IDENTITY_ID: ${{ vars.APP_IDENTITY_ID }}
+      APP_IDENTITY_CLIENT_ID: ${{ vars.APP_IDENTITY_CLIENT_ID }}
+      FOUNDRY_API_KEY_KV_URI: ${{ vars.FOUNDRY_API_KEY_KV_URI }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login a Azure (OIDC, sin secretos)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build y push de la imagen runtime a ACR
+        run: |
+          az acr login --name "$ACR_NAME"
+          docker build -f devops/Dockerfile --target runtime -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Referencia al secret de Key Vault (solo con api_key)
+        if: vars.FOUNDRY_AUTH_PROVIDER == 'api_key'
+        run: |
+          az containerapp secret set -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+            --secrets "foundry-api-key=keyvaultref:$FOUNDRY_API_KEY_KV_URI,identityref:$APP_IDENTITY_ID"
+
+      - name: Deploy en Container Apps
+        run: |
+          env_vars=(
+            "FOUNDRY_ENDPOINT=$FOUNDRY_ENDPOINT"
+            "FOUNDRY_DEPLOYMENT=$FOUNDRY_DEPLOYMENT"
+            "FOUNDRY_AUTH_PROVIDER=$FOUNDRY_AUTH_PROVIDER"
+            "AZURE_CLIENT_ID=$APP_IDENTITY_CLIENT_ID"
+          )
+          if [ "$FOUNDRY_AUTH_PROVIDER" = "api_key" ]; then
+            env_vars+=("FOUNDRY_API_KEY=secretref:foundry-api-key")
+          fi
+          az containerapp update -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+            --image "$IMAGE" --set-env-vars "${env_vars[@]}"
